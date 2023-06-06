@@ -13,7 +13,8 @@ class KT(Optimizer):
     Arguments:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
-        w (float, optional): Initial wealth (default 1e-4)
+        w (float, optional): Initial wealth. Set this number more or less to
+        the initial learning rate you would use in Adam or SGD (default 1e-4)
         weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
     .. _Coin Betting and Parameter-Free Online Learning:
         https://arxiv.org/abs/1602.04128
@@ -56,6 +57,7 @@ class KT(Optimizer):
                 x0 = group['x0']
                 theta = group['theta']
             
+            # Calculate how much the betting algorithm won in this round
             gain = torch.stack([torch.dot((x-p.detach()).flatten(),p.grad.flatten()) for p,x in zip(group['params'],x0)]).sum().item()
             self._wealth += gain
             self._iter += 1

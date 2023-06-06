@@ -62,15 +62,15 @@ class COCOB(Optimizer):
 
                 # State initialization
                 if len(state) == 0:
-                    # sum of the negative gradients
+                    # Sum of the negative gradients
                     state['sum_negative_gradients'] = torch.zeros_like(p).detach()
-                    # sum of the absolute values of the stochastic subgradients
+                    # Sum of the absolute values of the stochastic subgradients
                     state['grad_norm_sum'] = torch.zeros_like(p).detach()
-                    # Update the maximum observed scale
+                    # Maximum observed scale
                     state['L'] = self._eps*torch.ones_like(p).detach()
-                    # reward/wealth of the algorithm for each coordinate
+                    # Reward/wealth of the algorithm for each coordinate
                     state['reward'] = torch.zeros_like(p).detach()
-                    # we need to save the initial point because this is a FTRL-based algorithm
+                    # We need to save the initial point because this is a FTRL-based algorithm
                     state['x0'] = torch.clone(p.data).detach()
 
                 sum_negative_gradients, grad_norm_sum, L, reward, x0 = (

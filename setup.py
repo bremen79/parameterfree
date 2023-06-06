@@ -15,7 +15,7 @@ with open(path.join(HERE, 'README.md'), encoding='utf-8') as f:
 setup(
     name="parameterfree",
     version="0.0.1",
-    description="Parameter-Free Optimizers for Pytorch",
+    description="Parameter-Free Optimizers for PyTorch",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/bremen79/parameterfree",
