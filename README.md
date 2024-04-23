@@ -32,13 +32,13 @@ Here the current implemented algorithms:
 *Francesco Orabona, Tatiana Tommasi. Training Deep Networks without Learning Rates Through Coin Betting.
  [NeurIPS'17](https://arxiv.org/abs/1705.07795)*
 
-- **KT** First parameter-free algorithm based on the coin-betting framework. Code never released. *Warning:* KT might diverge if the stochastic gradients are not bounded in L2 norm by 1, so it is safe to use only with gradient clipping. The paper is 
+- **KT** First parameter-free algorithm based on the coin-betting framework. Code never released. This is the simplest version of parameter-free algorithms, do not expect state-of-the-art performance. *Warning:* KT might diverge if the stochastic gradients are not bounded in L2 norm by 1, so it is safe to use only with gradient clipping. The paper is 
 *Francesco Orabona, Dávid Pál. Coin Betting and Parameter-Free Online Learning.
  [NeurIPS'16](https://arxiv.org/abs/1602.04128)*
  
-- **cKT** Coordinate-wise KT. This algorithm appeared for the first time in [my lecture notes on online learning](https://arxiv.org/abs/1912.13213), Section 9.3. Code never released. *Warning:* cKT might diverge if the each coordinate of the stochastic gradients are not bounded by 1, so it is safe to use only with gradient clipping with norm=inf.
+- **cKT** Coordinate-wise KT. This algorithm appeared for the first time in [my lecture notes on online learning](https://arxiv.org/abs/1912.13213), Section 9.3. Code never released. As for KT, do not expect state-of-the-art performance, this is interesting only from a theoretical point of view. *Warning:* cKT might diverge if the each coordinate of the stochastic gradients are not bounded by 1, so it is safe to use only with gradient clipping with norm=inf.
 
-All the above algorithms support the use of a learning rate decay, see the example file for how to use it. While it is not needed for convex optimization, for a large class of non-convex functions a learning rate decay allows to provable converge to the minimizer, as proved in [this paper of mine](https://arxiv.org/abs/2102.00236). The learning rate decay is used in a straightforward way: all the stochastic gradients are multiplied by the learning rate decay before being used in the algorithms, that's it!
+All the above algorithms support the use of a learning rate decay, see the example file for how to use it. While it is not needed for convex optimization, a learning rate decay allows FTRL-based parameter-free algorithms to provable converge to the minimizer for a large class of **non-convex** functions, as proved in [this paper of mine](https://arxiv.org/abs/2102.00236). The learning rate decay is used in a straightforward way: all the stochastic gradients are multiplied by the learning rate decay before being used by the algorithms, that's it!
 
 If instead of the code you are interested in the theory, a good starting point is the [tutorial](https://parameterfree.com/icml-tutorial/) we gave at [ICML 2020](https://icml.cc/Conferences/2020/Schedule?showEvent=5753).
 Note that these are not heuristics, there is a very solid theory behind these algorithms that shows that you can achieve the performance of a tuned SGD or even AdaGrad essentially for free.
