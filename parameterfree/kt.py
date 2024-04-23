@@ -10,9 +10,11 @@ from torch.optim.optimizer import Optimizer
 class KT(Optimizer):
     r"""Implements the KT algorithm.
     It has been proposed in `Coin Betting and Parameter-Free Online Learning`_.
-    Arguments:
-        params (iterable): iterable of parameters to optimize or dicts defining
-            parameter groups
+    
+    Args:
+        params (iterable): iterable of parameters to optimize. Warning: If you
+        pass dicts defining more than one parameter group it will not work as
+        intended.
         w (float, optional): Initial wealth. Set this number more or less to
         the initial learning rate you would use in Adam or SGD (default 1e-4)
         weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
@@ -27,7 +29,7 @@ class KT(Optimizer):
             raise ValueError(
                 "Invalid weight_decay value: {}".format(weight_decay))
 
-        defaults = dict(weight_decay=weight_decay)
+        defaults = dict(weight_decay=weight_decay, lr=1.0)
         self._wealth = w
         self._iter=1
         self._firstep = True
@@ -45,6 +47,8 @@ class KT(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        
+        lr = max(group['lr'] for group in self.param_groups)
         
         for group in self.param_groups:
             weight_decay = group['weight_decay']
@@ -71,7 +75,7 @@ class KT(Optimizer):
                 if p.grad is None:
                     continue
                 else:
-                    t.add_(p.grad, alpha=-1)
+                    t.add_(p.grad*lr, alpha=-1)
                 p.data.copy_(t.mul(self._wealth/self._iter).add(x))
                                 
         return loss

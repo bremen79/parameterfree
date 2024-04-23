@@ -21,7 +21,8 @@ Some of them work very well, even winning Kaggle competitions, some others are m
 However, the original code of many of these algorithms got lost or the authors stopped maintaining them.
 This also makes it difficult to compare recent algorithms with previous variants.
 
-Moreover, people in this field know that it is possible to combine tricks and reductions, like LEGO blocks, to obtain even more powerful parameter-free algorithms. However, there is essentially no code available, but only long papers full of math :)
+Moreover, people in this field know that it is possible to combine tricks and reductions, like LEGO blocks, to obtain even more powerful parameter-free algorithms. For example, any online convex optimization algorithm can be made coordinate-wise just running an independent copy on each coordinate.
+However, there is essentially no code available, but only long papers full of math :)
 
 So, I decided to write a single library to gather all the parameter-free algorithms I know and possibly of some interesting and easy to obtain variants.
 I'll add them slowly over time.
@@ -34,6 +35,13 @@ Here the current implemented algorithms:
 - **KT** First parameter-free algorithm based on the coin-betting framework. Code never released. *Warning:* KT might diverge if the stochastic gradients are not bounded in L2 norm by 1, so it is safe to use only with gradient clipping. The paper is 
 *Francesco Orabona, Dávid Pál. Coin Betting and Parameter-Free Online Learning.
  [NeurIPS'16](https://arxiv.org/abs/1602.04128)*
+ 
+- **cKT** Coordinate-wise KT. This algorithm appeared for the first time in [my lecture notes on online learning](https://arxiv.org/abs/1912.13213), Section 9.3. Code never released. *Warning:* cKT might diverge if the each coordinate of the stochastic gradients are not bounded by 1, so it is safe to use only with gradient clipping with norm=inf.
+
+All the above algorithms support the use of a learning rate decay, see the example file for how to use it. While it is not needed for convex optimization, for a large class of non-convex functions a learning rate decay allows to provable converge to the minimizer, as proved in [this paper of mine](https://arxiv.org/abs/2102.00236). The learning rate decay is used in a straightforward way: all the stochastic gradients are multiplied by the learning rate decay before being used in the algorithms, that's it!
+
+If instead of the code you are interested in the theory, a good starting point is the [tutorial](https://parameterfree.com/icml-tutorial/) we gave at [ICML 2020](https://icml.cc/Conferences/2020/Schedule?showEvent=5753).
+Note that these are not heuristics, there is a very solid theory behind these algorithms that shows that you can achieve the performance of a tuned SGD or even AdaGrad essentially for free.
 
 # Generalization and Parameter-Free Algorithms
 
@@ -61,7 +69,8 @@ In the following experiments, Adam has the default settings and constant learnin
 ![vision](figures/fashionmnist.png)
 FashionMNIST, 2 fully connected hidden layers with 1000 hidden units each and ReLU activations. 
 
-Some classic linear classification experiments too. (If a line does not appear it is because it is outside of the plot.)
+Some classic linear classification experiments too. (If a line does not appear it is because it is outside of the plot. Also, don't be too surprised of the fact that Adam is not so good on convex problems: this is known and probably an effect of the [hypothesis of the co-adaptation of neural networks and optimizers](https://parameterfree.com/2020/12/06/neural-network-maybe-evolved-to-make-adam-the-best-optimizer/) that I have proposed some time ago.)
+
 ![vision](figures/a9a.png)
 ![vision](figures/w8a.png)
 ![vision](figures/ijcnn1.png)

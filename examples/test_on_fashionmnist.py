@@ -6,8 +6,9 @@ from torchvision.transforms import ToTensor
 import torch.optim as optim
 import numpy as np
 import random
+from torch.optim import lr_scheduler
 
-from parameterfree import KT, COCOB
+from parameterfree import KT, COCOB, cKT
 
 class FashionMNISTModel(nn.Module):
     def __init__(self):
@@ -55,11 +56,16 @@ def main():
 
     # choose optimizer
     optimizer = COCOB(model.parameters(), weight_decay=weight_decay)
+    #optimizer = KT(model.parameters(), weight_decay=weight_decay)
+    #optimizer = cKT(model.parameters(), weight_decay=weight_decay)
 
     tot_loss = 0
     tot_acc = 0
     total = 0
     num_batch = 0
+
+    # uncomment this line to use a learning rate decay
+    #scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs*len(train_dataset))
 
     # training loop
     for epoch in range(max_epochs):
@@ -84,7 +90,10 @@ def main():
 
             # Print statistics every 100 epochs
             if batch_idx % 100== 0:
-                print(f"Epoch {epoch + 1}/{max_epochs}, Batch {batch_idx}/{len(train_dataset)}, Minibatch Loss: {loss.item():.3f}, Online Loss: {tot_loss/num_batch:.3f}, Online Acc: {tot_acc/total:.3f}")
+                print(f"Epoch {epoch + 1}/{max_epochs}, Batch {batch_idx}/{len(train_dataset)}, Minibatch Loss: {loss.item():.3f}, Online Loss: {tot_loss/num_batch:.3f}, Online Acc: {tot_acc/total:.3f}, Learning Rate Schedule: {optimizer.param_groups[0]['lr']:.3f}")
+            
+            # uncomment this line to use a learning rate decay
+            #scheduler.step()
 
         model.eval()
         correct_tr = 0
