@@ -1,3 +1,6 @@
+# Copyright (c) 2023, 2026 Francesco Orabona
+# Licensed under the MIT License. See LICENSE in the project root.
+
 from setuptools import setup, find_packages
 
 # To use a consistent encoding

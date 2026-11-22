@@ -1,9 +1,9 @@
-# Copyright (c) Francesco Orabona.
-# All rights reserved.
-# 
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
+# Copyright (c) 2023, 2026 Francesco Orabona
+# Licensed under the MIT License. See LICENSE in the project root.
 
 from .cocob import COCOB
 from .kt import KT
 from .ckt import cKT
+from .conic import ConicFTRL
+from .base import BatchedAlgorithm, BatchedOptimizer
+from .coordinatewise import CoordinateWise

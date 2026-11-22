@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Francesco Orabona
+# Licensed under the MIT License. See LICENSE in the project root.
+
 name: Tests
 
 on: [push, pull_request]

@@ -1,14 +1,17 @@
+# Copyright (c) 2026 Francesco Orabona
+# Licensed under the MIT License. See LICENSE in the project root.
+
 import copy
 import unittest
 
 import torch
 
-from parameterfree import COCOB, KT, cKT
+from parameterfree import COCOB, KT, cKT, ConicFTRL
 
 
 class OptimizerTests(unittest.TestCase):
     def test_quadratic_optimization(self):
-        for optimizer_type in (COCOB, KT, cKT):
+        for optimizer_type in (COCOB, KT, cKT, ConicFTRL):
             with self.subTest(optimizer=optimizer_type.__name__):
                 parameter = torch.nn.Parameter(torch.tensor([1.0]))
                 optimizer = optimizer_type([parameter])
@@ -46,11 +49,11 @@ class OptimizerTests(unittest.TestCase):
         optimizer = KT([parameter], weight_decay=0.1)
         optimizer.step()
         torch.testing.assert_close(parameter, torch.ones(1))
-        self.assertEqual(optimizer._iter, 1)
-        self.assertEqual(optimizer._wealth, 1e-4)
+        self.assertEqual(optimizer.learner_state['t'].item(), 1)
+        self.assertAlmostEqual(optimizer.learner_state['wealth'].item(), 1e-4)
 
     def test_checkpoint_continuation(self):
-        for optimizer_type in (COCOB, KT, cKT):
+        for optimizer_type in (COCOB, KT, cKT, ConicFTRL):
             with self.subTest(optimizer=optimizer_type.__name__):
                 parameter = torch.nn.Parameter(torch.tensor([1.0], dtype=torch.float64))
                 optimizer = optimizer_type([parameter])
@@ -82,12 +85,12 @@ class OptimizerTests(unittest.TestCase):
         parameter.grad = torch.ones_like(parameter) * 0.1
         optimizer.step()
         older_checkpoint = copy.deepcopy(optimizer.state_dict())
-        del older_checkpoint['kt_state']
+        del older_checkpoint['algorithm']
 
         restored = KT([torch.nn.Parameter(torch.ones(1))])
-        with self.assertRaisesRegex(ValueError, 'older KT checkpoints are unsupported'):
+        with self.assertRaisesRegex(ValueError, 'older checkpoints are unsupported'):
             restored.load_state_dict(older_checkpoint)
-        self.assertEqual(restored._iter, 1)
+        self.assertEqual(restored.learner_state['t'].item(), 1)
         self.assertNotIn('x0', restored.param_groups[0])
 
     def test_kt_rejects_sparse_gradients(self):

@@ -1,3 +1,6 @@
+# Copyright (c) 2023, 2024, 2026 Francesco Orabona
+# Licensed under the MIT License. See LICENSE in the project root.
+
 import torch
 import torch.nn as nn
 from torchvision.datasets import FashionMNIST
@@ -8,7 +11,7 @@ import numpy as np
 import random
 from torch.optim import lr_scheduler
 
-from parameterfree import KT, COCOB, cKT
+from parameterfree import KT, COCOB, cKT, ConicFTRL, CoordinateWise
 
 class FashionMNISTModel(nn.Module):
     def __init__(self):
@@ -56,8 +59,10 @@ def main():
 
     # choose optimizer
     optimizer = COCOB(model.parameters(), weight_decay=weight_decay)
-    #optimizer = KT(model.parameters(), weight_decay=weight_decay)
-    #optimizer = cKT(model.parameters(), weight_decay=weight_decay)
+    #optimizer = KT(model.parameters(), weight_decay=weight_decay, max_grad_norm=1.0)
+    #optimizer = cKT(model.parameters(), weight_decay=weight_decay, max_grad_norm=1.0)
+    #optimizer = ConicFTRL(model.parameters(), weight_decay=weight_decay)
+    #optimizer = CoordinateWise(ConicFTRL, model.parameters(), weight_decay=weight_decay)
 
     tot_loss = 0
     tot_acc = 0
