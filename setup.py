@@ -28,5 +28,6 @@ setup(
     ],
     python_requires='>=3.6',
     packages=["parameterfree"],
+    install_requires=["torch>=1.9"],
     include_package_data=True,
 )

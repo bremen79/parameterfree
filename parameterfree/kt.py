@@ -24,7 +24,7 @@ class KT(Optimizer):
 
     def __init__(self, params, w: float = 1e-4, weight_decay: float = 0):
         if not 0.0 <= w:
-            raise ValueError("Invalid w value: {}".format(alpha))
+            raise ValueError("Invalid w value: {}".format(w))
         if not 0.0 <= weight_decay:
             raise ValueError(
                 "Invalid weight_decay value: {}".format(weight_decay))
@@ -32,9 +32,25 @@ class KT(Optimizer):
         defaults = dict(weight_decay=weight_decay, lr=1.0)
         self._wealth = w
         self._iter=1
-        self._firstep = True
 
         super(KT, self).__init__(params, defaults)
+
+    def state_dict(self):
+        state = super(KT, self).state_dict()
+        state['kt_state'] = dict(wealth=self._wealth, iteration=self._iter)
+        return state
+
+    def load_state_dict(self, state_dict):
+        state = state_dict.copy()
+        if 'kt_state' not in state:
+            raise ValueError(
+                'KT checkpoint is missing wealth and iteration counters; '
+                'older KT checkpoints are unsupported.'
+            )
+        kt_state = state.pop('kt_state')
+        super(KT, self).load_state_dict(state)
+        self._wealth = kt_state['wealth']
+        self._iter = kt_state['iteration']
 
     @torch.no_grad()
     def step(self, closure = None):
@@ -52,22 +68,30 @@ class KT(Optimizer):
         
         for group in self.param_groups:
             weight_decay = group['weight_decay']
+
+            active_params = [p for p in group['params'] if p.grad is not None]
+            if not active_params:
+                continue
+            if any(p.grad.is_sparse for p in active_params):
+                raise RuntimeError('KT does not support sparse gradients')
             
-            if self._firstep:
+            if 'x0' not in group:
                 x0 = group['x0'] = [torch.clone(p).detach() for p in group['params']]
                 theta = group['theta'] = [torch.zeros_like(p).detach() for p in group['params']]
-                self._firstep = False
             else:
                 x0 = group['x0']
                 theta = group['theta']
             
             # Calculate how much the betting algorithm won in this round
-            gain = torch.stack([torch.dot((x-p.detach()).flatten(),p.grad.flatten()) for p,x in zip(group['params'],x0)]).sum().item()
+            gain = torch.stack([
+                torch.dot((x-p.detach()).flatten(), p.grad.flatten())
+                for p, x in zip(group['params'], x0) if p.grad is not None
+            ]).sum().item()
             self._wealth += gain
             self._iter += 1
             
             if weight_decay > 0:
-                for p in group['params']:
+                for p in active_params:
                     p.grad.add_(p, alpha=weight_decay)
 
             # update the sum of the negative gradients and the weights

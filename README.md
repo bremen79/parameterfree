@@ -77,3 +77,17 @@ Some classic linear classification experiments too. (If a line does not appear i
 
 # License
 See the [License file](/LICENSE).
+
+## Development
+
+Install the package with `python -m pip install -e .`, then run the tests with
+`python -m unittest discover -s tests -v`.
+
+Optimizer checkpoints use the standard PyTorch `state_dict()` and
+`load_state_dict()` interface. 
+
+Note that older KT checkpoints had a bug: they omitted the
+optimizer's wealth and iteration counters, so resuming training did not reproduce
+the original optimization trajectory. These checkpoints are unsupported and
+`KT.load_state_dict()` rejects them. New KT checkpoints save both counters and
+support exact continuation.
