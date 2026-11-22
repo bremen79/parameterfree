@@ -60,7 +60,7 @@ class cKT(Optimizer):
                     # Sum of the negative gradients
                     state['sum_negative_gradients'] = torch.zeros_like(p).detach()
                     # Sum of the absolute values of the stochastic subgradients
-                    state['reward'] = self._wealth*torch.ones_like(p).detach()
+                    state['reward'] = torch.full_like(p, self._wealth)
                     # Number of updates for each weight
                     state['t'] = torch.ones_like(p).detach()                    
                     # We need to save the initial point because this is a FTRL-based algorithm
@@ -76,15 +76,16 @@ class cKT(Optimizer):
                 if group['weight_decay'] != 0:
                     grad = grad.add(p, alpha=group['weight_decay'])
                 
-                grad=grad*lr
+                if lr != 1.0:
+                    grad = grad * lr
                 
                 # udpate dual vector
                 sum_negative_gradients.sub_(grad)
                 # update the wealth
-                reward.addcmul_(grad, p.data.sub(x0), value=-1)
+                reward.addcmul_(grad, p.sub(x0), value=-1)
                 # update the number of updates made on each weight
-                t.add_(torch.logical_not(torch.eq(grad, 0)).float())
+                t.add_(grad.ne(0))
                 # update model parameters
-                p.data.copy_(reward.mul(sum_negative_gradients).div(t).add(x0))
+                p.copy_(reward.mul(sum_negative_gradients).div_(t).add_(x0))
                                 
         return loss

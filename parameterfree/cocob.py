@@ -70,7 +70,7 @@ class COCOB(Optimizer):
                     # Sum of the absolute values of the stochastic subgradients
                     state['grad_norm_sum'] = torch.zeros_like(p).detach()
                     # Maximum observed scale
-                    state['L'] = self._eps*torch.ones_like(p).detach()
+                    state['L'] = torch.full_like(p, self._eps)
                     # Reward/wealth of the algorithm for each coordinate
                     state['reward'] = torch.zeros_like(p).detach()
                     # We need to save the initial point because this is a FTRL-based algorithm
@@ -87,21 +87,25 @@ class COCOB(Optimizer):
                 if group['weight_decay'] != 0:
                     grad = grad.add(p, alpha=group['weight_decay'])
                     
-                grad=grad*lr
+                if lr != 1.0:
+                    grad = grad * lr
 
-                # update maximum rage of the gradients
-                torch.max(L, torch.abs(grad), out=L)
+                # Reuse absolute gradients for the scale and norm sum.
+                abs_grad = grad.abs()
+                torch.maximum(L, abs_grad, out=L)
                 # udpate dual vector
                 sum_negative_gradients.sub_(grad)
                 # update sum of the absolute values of the gradients
-                grad_norm_sum.add_(torch.abs(grad))
+                grad_norm_sum.add_(abs_grad)
                 # update the wealth
-                reward.addcmul_(grad, p.data.sub(x0), value=-1)
+                reward.addcmul_(grad, p.sub(x0), value=-1)
                 # reset the wealth to zero in case we lost all
-                torch.maximum(reward, torch.zeros_like(reward), out=reward)
+                reward.clamp_min_(0)
                 # calculate denominator
-                den = torch.maximum(grad_norm_sum.add(L), L.mul(self._alpha)).mul(L)
+                den = grad_norm_sum.add(L)
+                torch.maximum(den, L.mul(self._alpha), out=den)
+                den.mul_(L)
                 # update model parameters
-                p.data.copy_(reward.add(L).mul(sum_negative_gradients).div(den).add(x0))
+                p.copy_(reward.add(L).mul_(sum_negative_gradients).div_(den).add_(x0))
                                 
         return loss

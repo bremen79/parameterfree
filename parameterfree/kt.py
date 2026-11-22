@@ -98,8 +98,8 @@ class KT(Optimizer):
             for p, t, x in zip(group['params'], theta, x0):
                 if p.grad is None:
                     continue
-                else:
-                    t.add_(p.grad*lr, alpha=-1)
-                p.data.copy_(t.mul(self._wealth/self._iter).add(x))
+                grad = p.grad if lr == 1.0 else p.grad * lr
+                t.sub_(grad)
+                p.copy_(t.mul(self._wealth/self._iter).add_(x))
                                 
         return loss
