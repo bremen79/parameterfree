@@ -6,8 +6,9 @@ name: Tests
 on: [push, pull_request]
 
 jobs:
+  # Pin the OS so ubuntu-latest migrations do not drop older Python builds.
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         python-version: ['3.10', '3.12']
@@ -25,7 +26,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   compatibility:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         include:
