@@ -3,7 +3,10 @@
 
 name: Tests
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_call:
 
 jobs:
   # Pin the OS so ubuntu-latest migrations do not drop older Python builds.

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Francesco Orabona
 # Licensed under the MIT License. See LICENSE in the project root.
 
-include LICENSE README.md
+include LICENSE README.md CONTRIBUTING.md
 include examples/test_on_fashionmnist.py
 recursive-include tests test_*.py
 recursive-include figures *.png

@@ -132,58 +132,6 @@ in [this paper of mine](https://arxiv.org/abs/2102.00236).
 If instead of the code you are interested in the theory, a good starting point is the [tutorial](https://parameterfree.com/icml-tutorial/) we gave at [ICML 2020](https://icml.cc/Conferences/2020/Schedule?showEvent=5753).
 Note that these are not heuristics, there is a very solid theory behind these algorithms that shows that you can achieve the performance of a tuned SGD or even AdaGrad essentially for free.
 
-### Adding algorithms
-
-Implement [BatchedAlgorithm](parameterfree/base.py), then use the same rule in
-vector or coordinate-wise mode. No dispatch table or wrapper changes are needed:
-
-```python
-import torch
-from parameterfree import BatchedAlgorithm, BatchedOptimizer, CoordinateWise
-
-class MyRule(BatchedAlgorithm):
-    def __init__(self, rate=0.1):
-        self.config = dict(rate=rate)
-
-    def init_state(self, initial_point):
-        return dict(anchor=initial_point.clone())
-
-    def update(self, state, point, gradient):
-        return state, point - self.config['rate'] * gradient
-
-vector = BatchedOptimizer(model.parameters(), MyRule(rate=0.1))
-# Or, on another model:
-coordinate = CoordinateWise(MyRule, other_model.parameters(), rate=0.1)
-```
-
-Points and gradients have shape `(learners, coordinates)`: `(1, d)` in vector
-mode and `(d, 1)` in coordinate-wise mode. Reduce only the last dimension so
-learners remain independent. State is a possibly nested dictionary of tensors,
-each with the same leading learner dimension. `update` returns new state and
-points without modifying its inputs; preserve shapes, dtypes, devices, and
-dictionary keys. Keep constructor options in `config` so
-`type(rule)(**rule.config)` recreates the rule on checkpoint restoration.
-Set `skip_zero_gradients=True` for a zero-round no-op policy. An optional
-`is_valid(state)` can return a boolean per learner for additional checks.
-
-For a named optimizer class, subclass `BatchedOptimizer`, set
-`algorithm_type = MyRule`, and construct it with an instance of that rule.
-`CoordinateWise(MyOptimizer, params, ...)` then works automatically. Ordinary
-PyTorch optimizers without this interface are not supported by the wrapper.
-
-Rules can optionally set `supports_tensor_lists=True` for direct coordinate-wise
-updates without parameter packing. The same `update` method is applied to
-independent state blocks for each model tensor. To optimize a vector rule too, define
-`vector_point_state_keys` and the pure `update_vector_blocks` method described
-in `BatchedAlgorithm`; KT is an example. Unmodified rules retain the packed
-execution path. Both paths use the same checkpoint layout. A vector rule can
-optionally supply `update_vector_blocks_foreach` for multi-tensor execution.
-A coordinate-wise rule can supply
-`update_coordinate_blocks(states, points, gradients)`, returning candidate state
-and prediction lists for the active tensors. The adapter masks zero coordinates
-when `skip_zero_gradients=True`. KT provides both examples; rules
-without these hooks retain their existing update method.
-
 # Generalization and Parameter-Free Algorithms
 
 It is well-known that the learning rate of the optimization algorithm also influences the generalization performance. So, what happens to the generalization of a deep network trained with a parameter-free algorithm? Well, it is very difficult to say because we do not have a strong theory of how generalization work in deep networks. In general, if your network does not overfit the training data with the usual optimizers, it won't overfit with parameter-free algorithms. However, if your network tend to overfit and you have to set the learning rate carefully to avoid it, parameter-free algorithms might overfit.
@@ -246,15 +194,7 @@ Some classic linear classification experiments too. (If a line does not appear i
 # License
 See the [License file](LICENSE).
 
-## Development
-
-Install the package with `python -m pip install -e .`, then run the tests with
-`python -m unittest discover -s tests -v`. Install `torchvision` and `numpy`
-to run the public example tests as well. Tests for the optional local profiler
-are skipped when that development tool is absent from the checkout or source
-distribution.
-
-### Checkpoints
+## Checkpoints
 
 All optimizers save their state and fixed anchors through the standard PyTorch
 `state_dict()` and `load_state_dict()` interface. COCOB also saves and restores
