@@ -136,7 +136,11 @@ class ConicAlgorithm(BatchedAlgorithm):
             grad_sq = torch.linalg.vector_norm(gradient, dim=-1).square()
             gain = (gradient * displacement).sum(dim=-1)
             theta_norm = torch.linalg.vector_norm(theta, dim=-1)
-        compiling = hasattr(torch, 'compiler') and torch.compiler.is_compiling()
+        compiler = getattr(torch, 'compiler', None)
+        is_compiling = getattr(compiler, 'is_compiling', None)
+        if is_compiling is None:
+            is_compiling = getattr(getattr(torch, '_dynamo', None), 'is_compiling', None)
+        compiling = is_compiling is not None and is_compiling()
         if point.shape[0] == 1 and not compiling:
             # Keep the vector optimizer's scalar solve cheap: one batched host
             # transfer rather than launching dozens of tiny GPU root kernels.

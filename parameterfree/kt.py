@@ -12,8 +12,8 @@ class KTAlgorithm(BatchedAlgorithm):
     """KT betting rule; reductions are over the last coordinate dimension."""
 
     supports_tensor_lists = True
+    skip_zero_gradients = True
     vector_point_state_keys = ('anchor', 'theta')
-    shared_coordinate_state_keys = ('t',)
 
     def __init__(self, w=1e-4):
         if not math.isfinite(w) or w < 0:
@@ -52,21 +52,25 @@ class KTAlgorithm(BatchedAlgorithm):
             gains = [(gradient * (point - state['anchor'])).sum()
                      for state, point, gradient in zip(states, points, gradients)]
         gain = sum(gains[1:], gains[0])
+        active_blocks = [gradient.ne(0).any() for gradient in gradients]
+        active = torch.stack(active_blocks).any()
         wealth = states[0]['wealth'] - gain
-        t = states[0]['t'] + 1
+        t = states[0]['t'] + active.to(torch.int64)
         scale = (wealth * t.to(wealth.dtype).reciprocal()).unsqueeze(-1)
         if foreach:
             anchors = [state['anchor'] for state in states]
             thetas = torch._foreach_add([state['theta'] for state in states], gradients)
             predictions = torch._foreach_sub(anchors, torch._foreach_mul(thetas, scale.reshape(())))
+            predictions = [torch.where(active, prediction, point)
+                           for prediction, point in zip(predictions, points)]
             candidates = [dict(anchor=anchor, theta=theta, wealth=wealth, t=t)
                           for anchor, theta in zip(anchors, thetas)]
             return candidates, predictions
         candidates, predictions = [], []
-        for state, gradient in zip(states, gradients):
+        for state, point, gradient in zip(states, points, gradients):
             theta = state['theta'] + gradient
             candidates.append(dict(anchor=state['anchor'], theta=theta, wealth=wealth, t=t))
-            predictions.append(state['anchor'] - scale * theta)
+            predictions.append(torch.where(active, state['anchor'] - scale * theta, point))
         return candidates, predictions
 
     def update_coordinate_blocks(self, states, points, gradients):
@@ -93,9 +97,10 @@ class KT(BatchedOptimizer):
     Based on Orabona and Pal, Coin Betting and Parameter-Free Online Learning
     (https://arxiv.org/abs/1602.04128). Requires effective gradient L2 norm <= 1.
     ``w`` is initial wealth (default 1e-4). All parameters share one learner;
-    initial network weights are the anchor. Explicit zero-gradient rounds
-    advance the counter. Missing components are zero feedback in this joint
-    learner; an entirely missing gradient is a no-op. max_grad_norm optionally
+    initial network weights are the anchor. An entirely zero effective gradient
+    leaves parameters, wealth, and the counter unchanged. Missing components
+    are zero feedback in this joint learner; an entirely missing gradient is
+    also a no-op. max_grad_norm optionally
     clips raw gradients in the update (L2 norm), before decay and lr scaling;
     default None leaves clipping to the caller. Use max_grad_norm=1.0 for the
     unit raw-gradient bound when lr <= 1 and weight_decay == 0. foreach=None

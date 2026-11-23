@@ -9,8 +9,8 @@ class cKT(CoordinateWise):
     """Convenience name for CoordinateWise(KT, ...).
 
     Requires each effective gradient coordinate to lie in [-1, 1]. Wealth is
-    per coordinate. Explicit zero-gradient rounds advance each learner's clock,
-    matching independent KT copies; older cKT skipped those rounds instead.
+    per coordinate. A zero effective gradient pauses that coordinate's parameter,
+    wealth, and round counter, matching independent KT copies.
     max_grad_norm=1.0 optionally applies global Linf clipping inside the update,
     before decay and lr scaling. Default None leaves clipping to the caller.
     foreach=None selects multi-tensor operations on CUDA; False uses per-tensor

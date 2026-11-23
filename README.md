@@ -12,12 +12,89 @@ This is a library for parameter-free optimization in PyTorch. Parameter-free is 
 To install the package, simply run `pip install parameterfree`.
 
 ## Usage
-All the parameter-free algorithms are implemented using the standard PyTorch optimizer interface. After installing with pip, you can simply import and use any of them in your code. For example, to use COCOB, write
+
+All optimizers use the standard PyTorch optimizer interface. Initialize the
+model and move it to its device before constructing the optimizer, so its
+initial parameters become the fixed anchor:
+
 ```python
-from parameterfree import COCOB
-optimizer = COCOB(optimizer args)
+import torch
+from parameterfree import COCOB, KT, cKT, ConicFTRL, CoordinateWise
+
+model = torch.nn.Linear(10, 1)
+optimizer = COCOB(model.parameters())
+
+optimizer.zero_grad()
+loss = model(torch.randn(8, 10)).square().mean()
+loss.backward()
+optimizer.step()
 ```
-where `optimizer args` follows the standard PyTorch optimizer syntax. 
+
+Choose the constructor for the algorithm you want; the training loop is the same:
+
+| Algorithm | Constructor | Required effective-gradient bound |
+| --- | --- | --- |
+| COCOB | `COCOB(model.parameters())` | None |
+| KT | `KT(model.parameters(), max_grad_norm=1.0)` | Global L2 norm at most 1 |
+| cKT | `cKT(model.parameters(), max_grad_norm=1.0)` | Each coordinate in `[-1, 1]` |
+| ConicFTRL | `ConicFTRL(model.parameters())` | None |
+| Coordinate-wise ConicFTRL | `CoordinateWise(ConicFTRL, model.parameters())` | None |
+
+`cKT(params, ...)` is shorthand for `CoordinateWise(KT, params, ...)`. The
+wrapper runs independent scalar learners using batched tensor operations, with
+no optimizer objects or Python loops per weight. The FashionMNIST script calls
+the coordinate-wise ConicFTRL variant `cConicFTRL`.
+
+COCOB defaults to `alpha=100` (initial stabilization) and `eps=1e-8` (numerical
+stability). KT and cKT default to initial wealth `w=1e-4`. ConicFTRL defaults to
+`epsilon=1.0` (initial loss budget, not a numerical stabilizer) and `gamma=1.0`
+(regularization tradeoff). In coordinate-wise mode, `w` and `epsilon` are
+**per-coordinate** budgets; divide a total budget by
+`d = sum(p.numel() for p in model.parameters())` to split it across weights.
+
+### Shared options
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `weight_decay` | `0.0` | Adds an L2 penalty to the gradient. |
+| `compile` | `False` | Uses `torch.compile` to fuse optimizer updates (PyTorch 2+); first use includes compilation. |
+| `error_if_nonfinite` | `True` | Checks gradients and candidate state before committing updates; adds a synchronization on CUDA. Set to `False` to omit these checks. Vector ConicFTRL retains its own scalar-state checks. |
+
+Pass these options to any constructor above, including `CoordinateWise`.
+COCOB, KT, and cKT also accept `foreach=None`, selecting multi-tensor operations
+on CUDA and per-tensor operations on CPU. `True` forces multi-tensor execution;
+`False` keeps per-tensor execution. COCOB's foreach path requires one dtype/device;
+automatic selection falls back for heterogeneous parameters. `CoordinateWise`
+accepts `foreach` and uses the supplied rule's execution paths; ConicFTRL uses
+its packed update and has no `foreach` constructor option. Execution paths may
+differ in floating-point rounding; benchmark them on the target device.
+
+Parameter groups can set `lr` (initially 1) and `weight_decay`. Schedulers work
+by scaling gradients through `lr`. KT/cKT also accept `max_grad_norm` (default
+`None`); the constructors above enable global L2/Linf clipping, respectively.
+Clipping precedes weight decay and gradient scaling, so those transformations
+must still respect KT's effective-gradient bound. With `weight_decay=0` and
+`lr <= 1`, `max_grad_norm=1.0` enforces the bound. Updates do not modify `p.grad`.
+
+### State and zero gradients
+
+KT, cKT, ConicFTRL, and `CoordinateWise` require dense float32 or float64
+parameters of one dtype on one device, with the parameter set fixed at
+construction. Floating state uses the parameter dtype; KT counters use int64.
+Float32 models use float32 reductions and tensor root solves. Eager vector
+ConicFTRL solves its scalar equation in Python double precision on the CPU,
+then stores the result in the parameter dtype. The batched backend does not
+support float16/bfloat16 parameters or introduce automatic mixed precision.
+
+Vector KT and ConicFTRL share state across all parameters. An entirely zero or
+missing effective gradient leaves parameters and state unchanged. Individual
+zero or missing components can still move when other components are nonzero.
+COCOB pauses tensors with missing gradients. Coordinate-wise learners pause
+missing or zero effective coordinates independently, including cKT's wealth
+and per-coordinate round counters. Zero detection follows clipping, decay, and
+`lr` scaling, so a zero raw gradient with nonzero weight decay need not be
+skipped. Checkpoint loading retains stored counters; future zero rounds follow
+this policy.
 
 ## Details
 
@@ -37,189 +114,23 @@ Here the current implemented algorithms:
 *Francesco Orabona, Tatiana Tommasi. Training Deep Networks without Learning Rates Through Coin Betting.
  [NeurIPS'17](https://arxiv.org/abs/1705.07795)*
 
-- **KT** First parameter-free algorithm based on the coin-betting framework. Code never released. This is the simplest version of parameter-free algorithms, do not expect state-of-the-art performance. *Warning:* KT might diverge if the stochastic gradients are not bounded in L2 norm by 1, so it is safe to use only with gradient clipping. The paper is 
+- **KT** First parameter-free algorithm based on the coin-betting framework. Code never released. This is the simplest version of parameter-free algorithms, do not expect state-of-the-art performance. The paper is
 *Francesco Orabona, Dávid Pál. Coin Betting and Parameter-Free Online Learning.
  [NeurIPS'16](https://arxiv.org/abs/1602.04128)*
  
-- **cKT** Coordinate-wise KT. This algorithm appeared for the first time in [my lecture notes on online learning](https://arxiv.org/abs/1912.13213), Section 9.3. Code never released. As for KT, do not expect state-of-the-art performance, this is interesting only from a theoretical point of view. *Warning:* cKT might diverge if the each coordinate of the stochastic gradients are not bounded by 1, so it is safe to use only with gradient clipping with norm=inf.
+- **cKT** Coordinate-wise KT. This algorithm appeared for the first time in [my lecture notes on online learning](https://arxiv.org/abs/1912.13213), Section 9.3. Code never released. As for KT, do not expect state-of-the-art performance, this is interesting only from a theoretical point of view.
 
 - **ConicFTRL** Euclidean implementation of Algorithm 4 (Section 8) in
   *Julien Grand-Clément, Joon Kwon, Francesco Orabona.
   [Conic-Lifting for Learning-rate-free Convex Optimization](https://arxiv.org/abs/2610.39531)*.
   It handles unconstrained domains without a supplied gradient bound or horizon.
-  The network's parameters at optimizer construction are the anchor. All tensors
-  share one lifted scalar coordinate and global gradient-norm statistics.
 
-All the above algorithms support the use of a learning rate decay, see the example file for how to use it. While it is not needed for convex optimization, a learning rate decay allows FTRL-based parameter-free algorithms to provable converge to the minimizer for a large class of **non-convex** functions, as proved in [this paper of mine](https://arxiv.org/abs/2102.00236). The learning rate decay is used in a straightforward way: all the stochastic gradients are multiplied by the learning rate decay before being used by the algorithms, that's it!
+Learning rate decay allows FTRL-based parameter-free algorithms to provably
+converge to a minimizer for a large class of **non-convex** functions, as proved
+in [this paper of mine](https://arxiv.org/abs/2102.00236).
 
 If instead of the code you are interested in the theory, a good starting point is the [tutorial](https://parameterfree.com/icml-tutorial/) we gave at [ICML 2020](https://icml.cc/Conferences/2020/Schedule?showEvent=5753).
 Note that these are not heuristics, there is a very solid theory behind these algorithms that shows that you can achieve the performance of a tuned SGD or even AdaGrad essentially for free.
-
-### Using ConicFTRL
-
-Create the optimizer after initializing the network and moving it to its device:
-
-```python
-from parameterfree import ConicFTRL
-
-model = FashionMNISTModel().to(device)
-optimizer = ConicFTRL(model.parameters())
-```
-
-The optional `epsilon=1.0` sets the paper's initial loss budget, and `gamma=1.0`
-sets its regularization tradeoff. `epsilon` is not a numerical denominator
-stabilizer. Optional `weight_decay=0.0` adds an L2 penalty on the network's
-parameters. The anchor stays fixed, and is saved along with all algorithm state
-by the standard `state_dict()` interface.
-
-Parameters must be dense float32 or float64 tensors on a single device.
-Parameter groups share the same conic state; each group's `lr` (initially 1)
-scales its gradients before the algorithm uses them. Schedulers work through
-this gradient scaling. No gradient clipping is required by the algorithm.
-Missing gradients are zero components of the joint gradient, so a parameter
-with past nonzero gradients may still move when another tensor's gradient
-changes the shared scale. An entirely zero or missing effective gradient leaves
-the parameters and algorithm state unchanged.
-
-The vector update solves the scalar equation in Section 8.3 using an exact
-quadratic solution on the radius boundary and tightly bracketed Halley steps
-otherwise, in Python double precision after a batched scalar transfer to the CPU. The paper's
-guarantees are for convex online optimization; this implementation also accepts
-gradients from nonconvex neural networks.
-
-### Coordinate-wise algorithms
-
-```python
-from parameterfree import CoordinateWise, KT, ConicFTRL
-
-optimizer = CoordinateWise(KT, model.parameters(), w=1e-4)
-# Alternatively:
-optimizer = CoordinateWise(ConicFTRL, model.parameters(), epsilon=1.0, gamma=1.0)
-```
-
-The wrapper runs an independent scalar learner for every weight. It uses batched
-tensor operations, with one algorithm instance and no optimizer objects or
-Python loops per weight. Each learner anchors at its weight at construction.
-`cKT(params, ...)` is a convenience name for `CoordinateWise(KT, params, ...)`.
-KT still requires effective L2 gradient norm at most 1 in vector mode, and
-absolute effective gradients at most 1 in coordinate-wise mode. Clipping is optional: pass `max_grad_norm=1.0` to KT or cKT (also
-`CoordinateWise(KT, ...)`) to apply the usual global L2/Linf clipping inside
-the update. The default `None` leaves clipping to the caller. Clipping applies
-to raw gradients before decay and gradient scaling, so those transformations
-must still respect KT's effective-gradient bound. ConicFTRL requires no clipping.
-
-`w` and `epsilon` are **per-coordinate** budgets. For a total budget `budget`,
-pass `w=budget/d` or `epsilon=budget/d`, where
-`d = sum(p.numel() for p in model.parameters())`. Parameter groups can specify
-different gradient multipliers through `lr` and different L2 weight decay.
-They are all declared at construction; the parameter set is fixed.
-Parameters must have one dtype (float32 or float64) on one device.
-
-Built-in optimizers follow native PyTorch Adam's storage convention: floating
-state uses the parameter dtype. Float32 models use float32 gradients, state,
-reductions, and tensor root solves, with no implicit float64 promotion; float64
-models use float64 throughout. KT round counters remain int64. The eager vector
-ConicFTRL path uses Python scalar arithmetic for its host solve, then stores its
-results in the parameter dtype. Custom batched algorithms may define their own
-state dtypes. The batched backend does not support float16/bfloat16 parameters.
-This policy does not introduce automatic mixed-precision training.
-
-Finite range and rounding now follow the chosen dtype. For example, squaring a
-1e20 gradient overflows float32; use float64 parameters when that range is
-needed. With default validation, invalid updates raise before committing the
-prediction. Disabling validation also disables that protection in tensor updates.
-
-A missing gradient pauses its scalar learners. Explicit zero gradients follow
-the base rule: KT advances its round counter; ConicFTRL is a no-op. This changes
-the old `cKT` behavior, which skipped explicit zero rounds. Vector KT now applies
-the effective gradient, including decay and scheduling, consistently to both
-wealth and cumulative gradients, and does not modify `p.grad`.
-
-Coordinate-wise ConicFTRL has full-sized scalar-state tensors and solves all
-roots together on the device using the same quadratic solution and three
-safeguarded Halley steps on a dimensionless cubic. Horner evaluation reduces
-each refinement to one division. Analytical brackets preserve the original
-stationarity conditions. Scalar
-learners also avoid unnecessary norm reductions. The coordinate-wise version needs more memory and
-arithmetic than the vector version. `compile=True` optionally uses
-`torch.compile` to fuse packing, zero-gradient masking, the tensor update, and
-validation (PyTorch 2+; first use includes compilation). Benchmark it on the target GPU. The default
-`error_if_nonfinite=True` checks candidate state before committing it and adds
-a CUDA synchronization; set it to `False` to omit the adapter check. The vector
-conic algorithm retains its own scalar-state checks.
-
-[conic_speedup.ipynb](benchmarks/conic_speedup.ipynb) embeds the old and new
-conic implementations for a before/after GPU comparison in Colab. Its baseline
-uses the previous float64-statistics implementation; the new snapshot uses
-parameter precision with the same three-step Halley solver. It includes compilation
-warmup, trajectory checks, and repeated timing trials. The FashionMNIST Colab
-notebook now enables compiled updates by default; set `COMPILE_UPDATES=False`
-to compare eager execution. This flag applies to all six methods: COCOB now
-supports `compile=True`, and the runner compiles Adam's native `step` callable.
-`ERROR_IF_NONFINITE` applies to all repository optimizers, including COCOB;
-Adam retains PyTorch's native behavior. Compilation changes execution, not the
-optimizer formulas. First-epoch times include compilation for every compiled
-method; use later epochs to compare steady-state training speed.
-
-COCOB also accepts these options directly:
-
-```python
-optimizer = COCOB(model.parameters(), compile=True, error_if_nonfinite=False)
-```
-
-With validation enabled (the default), COCOB checks gradients, predictions,
-and candidate state before committing updates, with one CUDA synchronization
-per step. Its parameter groups, missing-gradient behavior, and checkpoint
-state keys are preserved.
-
-KT and cKT update each model tensor directly, using independent persistent
-state buffers. Parameters and gradients are not concatenated each step.
-`learner_state` provides a read-only packed snapshot for inspection; packing is
-performed only on inspection or checkpoint export. cKT stores its uniform
-integer clock once per model tensor, since explicit zero rounds also advance
-all its coordinates. Missing gradients pause that tensor's clock. Nonuniform
-clocks loaded from a checkpoint retain their full representation.
-With `compile=True, error_if_nonfinite=False`, parameter and state writes occur
-inside the compiled graph. COCOB similarly updates persistent state buffers in
-place. With validation enabled, candidates are checked before any writes.
-
-The FashionMNIST runner uses `max_grad_norm=1.0` for KT/cKT instead of a separate
-`clip_grad_norm_` call. For the default unit gradient multiplier and zero decay,
-clipping is part of the compiled graph. Other lr/decay settings use external
-functional preprocessing to avoid recompiling for every scheduler value.
-Gradients stored in `p.grad` are preserved. Supply `max_grad_norm` again when
-resuming; it is an execution setting, like compilation and validation.
-
-[kt_speedup.ipynb](benchmarks/kt_speedup.ipynb) compares the previous packed
-implementation with direct COCOB/KT/cKT updates and compiled native Adam. It
-includes the required KT/cKT clipping, numerical trajectory checks, compilation
-warmup, and alternating timing order. Timings cover optimizer steps, rather
-than forward/backward computation or a full training epoch.
-
-COCOB, KT, and cKT now select multi-tensor (`foreach`) operations automatically
-on CUDA. This exposes independent updates across model tensors to PyTorch's
-horizontal fusion, rather than relying on the compiler to recover them from
-separate Python iterations. CPU execution keeps the previous per-tensor path
-by default. Use `foreach=False` to compare the paths, or `foreach=True` to force
-multi-tensor execution on either device. Optimizer formulas, clipping policies,
-state precision, and checkpoint layout are unchanged; floating-point rounding
-can differ between execution paths. COCOB's foreach path requires one parameter
-dtype/device; its default falls back for heterogeneous groups.
-
-The FashionMNIST notebook exposes `FOREACH_UPDATES=None` (automatic CUDA
-selection) for these three optimizers; Adam keeps its native automatic selection.
-Set `FOREACH_UPDATES=False` for a comparison with the previous implementation.
-The ConicFTRL implementations are unchanged. Keep compilation enabled and
-per-step validation disabled when measuring throughput, and compare medians
-over several warmed-up epochs.
-
-[foreach_speedup.ipynb](benchmarks/foreach_speedup.ipynb) embeds the previous
-direct-update implementation and the multi-tensor implementation with native
-Adam as reference. Both baseline and candidate include integrated KT/cKT
-clipping, persistent state buffers, and the same precision policy. It compares
-optimizer-step timings with compilation excluded and checks the resulting
-parameters/state. A GPU speed gain is hardware/compiler dependent and must be
-measured; equal step speed is not guaranteed by simpler optimizer mathematics.
 
 ### Adding algorithms
 
@@ -267,9 +178,10 @@ independent state blocks for each model tensor. To optimize a vector rule too, d
 in `BatchedAlgorithm`; KT is an example. Unmodified rules retain the packed
 execution path. Both paths use the same checkpoint layout. A vector rule can
 optionally supply `update_vector_blocks_foreach` for multi-tensor execution.
-A coordinate-wise rule with no special zero-gradient policy can supply
+A coordinate-wise rule can supply
 `update_coordinate_blocks(states, points, gradients)`, returning candidate state
-and prediction lists for the active tensors. KT provides both examples; rules
+and prediction lists for the active tensors. The adapter masks zero coordinates
+when `skip_zero_gradients=True`. KT provides both examples; rules
 without these hooks retain their existing update method.
 
 # Generalization and Parameter-Free Algorithms
@@ -291,17 +203,32 @@ Here, the links to some other variants for PyTorch.
  
 # Preliminary Experiments
 
-To compare the vector and coordinate-wise KT/ConicFTRL variants and COCOB with Adam, upload
-[fashionmnist_colab.ipynb](examples/fashionmnist_colab.ipynb) to Google Colab,
-select a GPU runtime, and run all cells. It embeds the current optimizer sources
-and defaults to the network below, 30 epochs, and minibatches of 100. KT and cKT
-use their required L2 and Linf gradient clipping; the other methods use unclipped
-gradients. The notebook saves training/test loss and test accuracy plots as PNG
-and PDF, along with CSV metrics and the run settings. Settings allow smaller
-smoke runs or multiple seeds. Embedded snapshots do not update automatically.
+A training example is available in
+[examples/test_on_fashionmnist.py](examples/test_on_fashionmnist.py). It requires
+`torchvision` and `numpy` in addition to the library. From the repository root:
 
-The same runner is available locally with
-`python -m examples.compare_fashionmnist --device cuda`.
+```bash
+python -m examples.test_on_fashionmnist --optimizer COCOB
+python -m examples.test_on_fashionmnist --optimizer cKT --compile --skip-finite-check
+```
+
+Choose `COCOB` (the default), `KT`, `cKT`, `ConicFTRL`, `cConicFTRL`, or `Adam`.
+KT/cKT enable their required clipping automatically. `--compile`,
+`--skip-finite-check`, and `--foreach` / `--no-foreach` select the shared options
+above; Adam keeps its native checks. `--cosine-decay` enables a per-minibatch
+cosine schedule.
+
+The defaults are 30 epochs, minibatches of 100, and two hidden layers of width
+1000. A small data subset can check the training loop quickly:
+
+```bash
+python -m examples.test_on_fashionmnist --optimizer KT --epochs 2 --train-limit 1000 --test-limit 200
+```
+
+The script reports sample-weighted train/test loss and accuracy after each
+epoch. `--device`, `--data-dir`, `--seed`, `--workers`, and `--log-interval`
+configure execution; `--help` lists all options. This is a single-optimizer
+training example, rather than an optimizer timing benchmark.
 
 Probably due to the lack of reliable software, a comprehensive benchmark of parameter-free algorithms is missing. I plan to do one and please contact me if you want to help. In the while, here some toy experiments, just to show you that these algorithms do work.
 
@@ -317,20 +244,27 @@ Some classic linear classification experiments too. (If a line does not appear i
 ![vision](figures/ijcnn1.png)
 
 # License
-See the [License file](/LICENSE).
+See the [License file](LICENSE).
 
 ## Development
 
 Install the package with `python -m pip install -e .`, then run the tests with
-`python -m unittest discover -s tests -v`.
+`python -m unittest discover -s tests -v`. Install `torchvision` and `numpy`
+to run the public example tests as well. Tests for the optional local profiler
+are skipped when that development tool is absent from the checkout or source
+distribution.
 
-Optimizer checkpoints use the standard PyTorch `state_dict()` and
-`load_state_dict()` interface. 
+### Checkpoints
+
+All optimizers save their state and fixed anchors through the standard PyTorch
+`state_dict()` and `load_state_dict()` interface. COCOB also saves and restores
+`alpha` and `eps`. Older COCOB checkpoints omitted these options; construct the
+optimizer with the original values before loading such a checkpoint.
 
 Note that older KT checkpoints had a bug: they omitted the
 optimizer's wealth and iteration counters, so resuming training did not reproduce
 the original optimization trajectory. These checkpoints are unsupported and
-`KT.load_state_dict()` rejects them. New KT checkpoints save both counters and
+`KT.load_state_dict()` rejects them. New KT checkpoints save wealth and counters and
 support exact continuation.
 
 The batched backend uses a new versioned checkpoint format for KT, cKT,

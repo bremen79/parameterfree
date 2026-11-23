@@ -34,13 +34,15 @@ class BatchedAlgorithm(ABC):
     have shape (1, block_coordinates), including zero feedback for missing
     tensors. The adapter preserves the packed checkpoint layout in both paths.
     Uniform per-coordinate scalar state that stays uniform for a whole model
-    tensor (e.g. KT's integer clock) can be declared in shared_coordinate_state_keys.
+    tensor can be declared in shared_coordinate_state_keys. A clock that pauses
+    independently on zero coordinates must keep its full per-coordinate shape.
     Such leaves may have shape (1,) in the direct coordinate-wise update and must
     broadcast; checkpoint export restores the full per-coordinate shape.
     Optional foreach hooks are update_vector_blocks_foreach (same vector API)
     and update_coordinate_blocks (active tensors only, shape (n, 1)). Both
-    return pure candidate-state and prediction lists. The coordinate hook is
-    used only when skip_zero_gradients=False, preserving zero-round policies.
+    return pure candidate-state and prediction lists. The adapter masks zero
+    coordinates when skip_zero_gradients=True. Vector hooks must themselves
+    preserve the rule's zero-round policy for the joint learner.
     """
 
     skip_zero_gradients = False
@@ -281,8 +283,7 @@ class BatchedOptimizer(Optimizer):
             gradients = self._clip_gradients(gradients)
         if self.coordinatewise:
             candidates, predictions, valid = [], [], None
-            if (self._foreach and hasattr(self.algorithm, 'update_coordinate_blocks')
-                    and not self.algorithm.skip_zero_gradients):
+            if self._foreach and hasattr(self.algorithm, 'update_coordinate_blocks'):
                 present = [index for index, gradient in enumerate(gradients) if gradient is not None]
                 active_blocks = [blocks[index] for index in present]
                 matrix_points = [points[index].reshape(-1, 1) for index in present]
@@ -292,6 +293,10 @@ class BatchedOptimizer(Optimizer):
                 candidates, predictions = [None] * len(points), [None] * len(points)
                 for index, block, candidate, prediction, point, gradient in zip(
                         present, active_blocks, active_candidates, active_predictions, matrix_points, matrix_gradients):
+                    if self.algorithm.skip_zero_gradients:
+                        active = gradient.ne(0).any(dim=-1)
+                        candidate = _merge_state(block, candidate, active)
+                        prediction = torch.where(active.unsqueeze(-1), prediction, point)
                     candidates[index], predictions[index] = candidate, prediction
                     if self.error_if_nonfinite:
                         _merge_state(block, candidate, None)

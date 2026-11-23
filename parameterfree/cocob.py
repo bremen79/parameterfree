@@ -63,6 +63,21 @@ class COCOB(Optimizer):
             raise ValueError('foreach=True requires PyTorch tensor-list operators')
         self._foreach = (homogeneous and available and all(p.is_cuda for p in parameters)) if foreach is None else foreach
 
+    def state_dict(self):
+        state = super().state_dict()
+        state['cocob'] = dict(alpha=self._alpha, eps=self._eps)
+        return state
+
+    def load_state_dict(self, state_dict):
+        # Old checkpoints omitted these options. In that case retain the
+        # constructor values; the original values cannot be recovered.
+        config = state_dict.get('cocob', dict(alpha=self._alpha, eps=self._eps))
+        alpha, eps = config['alpha'], config['eps']
+        if not 0.0 <= alpha or not 0.0 <= eps:
+            raise ValueError('Invalid COCOB checkpoint configuration')
+        super().load_state_dict(state_dict)
+        self._alpha, self._eps = alpha, eps
+
     @torch.no_grad()
     def step(self, closure = None):
         """Performs a single optimization step.
@@ -75,10 +90,10 @@ class COCOB(Optimizer):
             with torch.enable_grad():
                 loss = closure()
         
-        lr = max(group['lr'] for group in self.param_groups)
         points, gradients, states = [], [], []
         
         for group in self.param_groups:
+            lr = group['lr']
             for p in group['params']:
                 if p.grad is None:
                     continue

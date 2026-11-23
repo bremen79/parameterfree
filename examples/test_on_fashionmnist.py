@@ -1,148 +1,225 @@
 # Copyright (c) 2023, 2024, 2026 Francesco Orabona
 # Licensed under the MIT License. See LICENSE in the project root.
 
-import torch
-import torch.nn as nn
-from torchvision.datasets import FashionMNIST
-from torch.utils.data import DataLoader
-from torchvision.transforms import ToTensor
-import torch.optim as optim
-import numpy as np
-import random
-from torch.optim import lr_scheduler
+"""Train one optimizer on FashionMNIST using the current PyTorch interface.
 
-from parameterfree import KT, COCOB, cKT, ConicFTRL, CoordinateWise
+From the repository root:
+    python -m examples.test_on_fashionmnist --optimizer COCOB
+    python -m examples.test_on_fashionmnist --optimizer cKT --compile
+
+Requires torchvision and numpy in addition to the library's torch dependency.
+"""
+
+import argparse
+from functools import partial
+import math
+import random
+import time
+
+import numpy as np
+import torch
+from torch import nn
+from torch.nn import functional as F
+from torch.utils.data import DataLoader, Subset
+from torchvision.datasets import FashionMNIST as _FashionMNIST
+from torchvision.transforms import ToTensor
+
+from parameterfree import COCOB, KT, cKT, ConicFTRL, CoordinateWise
+
+
+OPTIMIZERS = {
+    'COCOB': COCOB,
+    'KT': KT,
+    'cKT': cKT,
+    'ConicFTRL': ConicFTRL,
+    'cConicFTRL': partial(CoordinateWise, ConicFTRL),
+    'Adam': torch.optim.Adam,
+}
+
+
+class FashionMNIST(_FashionMNIST):
+    # Keep the original class name so existing FashionMNIST/raw caches work.
+    # torchvision verifies the authors' downloads using the standard checksums.
+    mirrors = ['https://raw.githubusercontent.com/zalandoresearch/fashion-mnist/master/data/fashion/'] + _FashionMNIST.mirrors
+
 
 class FashionMNISTModel(nn.Module):
-    def __init__(self):
-        super(FashionMNISTModel, self).__init__()
+    def __init__(self, hidden_size=1000):
+        super().__init__()
+        self.fc1 = nn.Linear(28 * 28, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, 10)
 
-        self.fc1 = nn.Linear(28*28, 1000)  # Input layer (28x28 = 784 pixels)
-        self.fc2 = nn.Linear(1000, 1000)  # First hidden layer
-        self.fc3 = nn.Linear(1000, 10)  # Output layer (10 classes for FashionMNIST)
-    
     def forward(self, x):
-        x = nn.Flatten()(x)
-        x = torch.relu(self.fc1(x))  
+        x = x.flatten(1)
+        x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
-        x = self.fc3(x)
-        return x
+        return self.fc3(x)
 
- 
-def main():
-    
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # training parameters
-    batch_size=100
-    weight_decay=0.0
-    max_epochs=30
-    loss_function = nn.CrossEntropyLoss()
 
-    # set random seed so that each time we run it we get the same results
-    torch.manual_seed(0)
-    np.random.seed(0)
-    random.seed(0)
-    torch.cuda.manual_seed(0)
+def make_optimizer(name, params, compile=False, error_if_nonfinite=True,
+                   foreach=None, cosine_decay=False):
+    params = list(params)
+    if compile and not hasattr(torch, 'compile'):
+        raise ValueError('--compile requires PyTorch 2 or newer')
+    options = {}
+    if name == 'Adam':
+        if foreach is not None:
+            options['foreach'] = foreach
+        if compile and cosine_decay:
+            # Tensor lr avoids recompiling Adam for each scheduler value.
+            device = params[0].device
+            if device.type == 'cpu' and foreach:
+                raise ValueError('Compiled Adam cosine scheduling on CPU requires --no-foreach')
+            options['lr'] = torch.tensor(1e-3, device=device, dtype=params[0].dtype)
+            options['capturable'] = device.type == 'cuda'
+    else:
+        options.update(compile=compile, error_if_nonfinite=error_if_nonfinite)
+        if name in ('COCOB', 'KT', 'cKT'):
+            options['foreach'] = foreach
+        if name in ('KT', 'cKT'):
+            # Required bounds: global L2 for KT, global Linf for cKT.
+            # No weight decay or gradient multiplier above 1 is used here.
+            options['max_grad_norm'] = 1.0
+    return OPTIMIZERS[name](params, **options)
 
-    # Download or load FashionMNIST
-    train_data = FashionMNIST(root="./data", train=True, transform=ToTensor(), download=True)
-    test_data = FashionMNIST(root="./data", train=False, transform=ToTensor())
 
-    # Setup data loader
-    train_dataset = DataLoader(dataset=train_data, batch_size=batch_size, shuffle=True)
-    test_dataset = DataLoader(dataset=test_data, batch_size=batch_size, shuffle=False)
-    
-    # create model
-    model = FashionMNISTModel()
-    model.to(device)
+def _metrics(totals, count):
+    if count == 0:
+        raise ValueError('Cannot evaluate an empty data loader')
+    loss_sum, correct = totals.tolist()
+    if not math.isfinite(loss_sum):
+        raise FloatingPointError('Non-finite loss')
+    return loss_sum / count, correct / count
 
-    # choose optimizer
-    optimizer = COCOB(model.parameters(), weight_decay=weight_decay)
-    #optimizer = KT(model.parameters(), weight_decay=weight_decay, max_grad_norm=1.0)
-    #optimizer = cKT(model.parameters(), weight_decay=weight_decay, max_grad_norm=1.0)
-    #optimizer = ConicFTRL(model.parameters(), weight_decay=weight_decay)
-    #optimizer = CoordinateWise(ConicFTRL, model.parameters(), weight_decay=weight_decay)
 
-    tot_loss = 0
-    tot_acc = 0
-    total = 0
-    num_batch = 0
+def train_epoch(model, loader, optimizer, device, *, update=None, scheduler=None,
+                epoch=1, log_interval=100):
+    model.train()
+    totals = torch.zeros(2, dtype=torch.float64, device=device)
+    count = 0
+    update = optimizer.step if update is None else update
+    for batch_index, (images, targets) in enumerate(loader, 1):
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(images)
+        loss = F.cross_entropy(logits, targets)
+        loss.backward()
+        update()
+        if scheduler is not None:
+            scheduler.step()
+        # Sample-weighted, per-epoch online metrics. Keep accumulation on the
+        # device rather than synchronizing CUDA for every minibatch.
+        totals[0].add_(loss.detach() * len(targets))
+        totals[1].add_((logits.detach().argmax(dim=1) == targets).sum())
+        count += len(targets)
+        if log_interval and (batch_index % log_interval == 0 or batch_index == len(loader)):
+            average_loss, accuracy = _metrics(totals, count)
+            print('Epoch {} | batch {}/{} | online loss {:.4f} | accuracy {:.2%}'.format(
+                epoch, batch_index, len(loader), average_loss, accuracy), flush=True)
+    return _metrics(totals, count)
 
-    # uncomment this line to use a learning rate decay
-    #scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_epochs*len(train_dataset))
 
-    # training loop
-    for epoch in range(max_epochs):
-        for batch_idx, (data, target) in enumerate(train_dataset):
-            data, target = data.to(device), target.to(device)
-                                            
-            # Forward pass
-            output = model(data)
-            loss = loss_function(output, target)
+@torch.no_grad()
+def evaluate(model, loader, device):
+    model.eval()
+    totals = torch.zeros(2, dtype=torch.float64, device=device)
+    count = 0
+    for images, targets in loader:
+        images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+        logits = model(images)
+        totals[0].add_(F.cross_entropy(logits, targets, reduction='sum'))
+        totals[1].add_((logits.argmax(dim=1) == targets).sum())
+        count += len(targets)
+    return _metrics(totals, count)
 
-            # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-                        
-            optimizer.step()
-            
-            total += target.size(0)
-            tot_loss += loss.item()
-            _, predicted = torch.max(output, 1)
-            tot_acc += (predicted==target).sum().item()
-            num_batch += 1
 
-            # Print statistics every 100 epochs
-            if batch_idx % 100== 0:
-                print(f"Epoch {epoch + 1}/{max_epochs}, Batch {batch_idx}/{len(train_dataset)}, Minibatch Loss: {loss.item():.3f}, Online Loss: {tot_loss/num_batch:.3f}, Online Acc: {tot_acc/total:.3f}, Learning Rate Schedule: {optimizer.param_groups[0]['lr']:.3f}")
-            
-            # uncomment this line to use a learning rate decay
-            #scheduler.step()
+def _limit(dataset, count):
+    if count is None:
+        return dataset
+    if not 1 <= count <= len(dataset):
+        raise ValueError('Dataset limits must be between 1 and {}'.format(len(dataset)))
+    return Subset(dataset, range(count))
 
-        model.eval()
-        correct_tr = 0
-        total_tr = 0
-        tot_loss_tr = 0
-        num_iter_tr = 0
-        # Testing on training data after each epoch
-        with torch.no_grad():
-            for data, target in train_dataset:
-                data, target = data.to(device), target.to(device)
 
-                # Forward pass
-                output = model(data)
-                
-                loss = loss_function(output, target)
-                _, predicted = torch.max(output, 1)
-                total_tr += target.size(0)
-                correct_tr += (predicted == target).sum().item()
-                tot_loss_tr += loss.item()
-                num_iter_tr += 1
+def _positive_int(value):
+    value = int(value)
+    if value < 1:
+        raise argparse.ArgumentTypeError('must be a positive integer')
+    return value
 
-        correct_te = 0
-        total_te = 0
-        tot_loss_te = 0
-        num_iter_te = 0
-        # Testing on training data after each epoch
-        with torch.no_grad():
-            for data, target in test_dataset:
-                data, target = data.to(device), target.to(device)
 
-                # Forward pass
-                output = model(data)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--optimizer', choices=list(OPTIMIZERS), default='COCOB')
+    parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+    parser.add_argument('--data-dir', default='./data')
+    parser.add_argument('--epochs', type=_positive_int, default=30)
+    parser.add_argument('--batch-size', type=_positive_int, default=100)
+    parser.add_argument('--hidden-size', type=_positive_int, default=1000)
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--workers', type=int, default=0)
+    parser.add_argument('--log-interval', type=int, default=100, help='batches between logs; 0 logs only epoch results')
+    parser.add_argument('--train-limit', type=_positive_int)
+    parser.add_argument('--test-limit', type=_positive_int)
+    parser.add_argument('--compile', action='store_true', help='compile optimizer updates; first epoch includes compilation')
+    parser.add_argument('--skip-finite-check', action='store_true', help='omit repository optimizers\' per-step validation')
+    parser.add_argument('--cosine-decay', action='store_true', help='decay lr/gradient multiplier over all training steps')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--foreach', dest='foreach', action='store_true', help='multi-tensor Adam/COCOB/KT/cKT updates')
+    group.add_argument('--no-foreach', dest='foreach', action='store_false')
+    parser.set_defaults(foreach=None)
+    args = parser.parse_args(argv)
+    if not 0 <= args.seed < 2 ** 32:
+        parser.error('--seed must be between 0 and 4294967295')
+    if args.workers < 0 or args.log_interval < 0:
+        parser.error('--workers and --log-interval must be nonnegative')
+    device = torch.device(args.device)
+    if device.type not in ('cpu', 'cuda'):
+        parser.error('This example supports CPU and CUDA devices')
+    if device.type == 'cuda' and not torch.cuda.is_available():
+        parser.error('CUDA is unavailable; use --device cpu')
+    if args.compile and not hasattr(torch, 'compile'):
+        parser.error('--compile requires PyTorch 2 or newer')
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(args.seed)
+    train_data = _limit(FashionMNIST(args.data_dir, train=True, transform=ToTensor(), download=True), args.train_limit)
+    test_data = _limit(FashionMNIST(args.data_dir, train=False, transform=ToTensor(), download=True), args.test_limit)
+    options = dict(batch_size=args.batch_size, num_workers=args.workers, pin_memory=device.type == 'cuda')
+    # Evaluation has a separate sequential loader: it never consumes the
+    # training sampler's shuffle generator.
+    train_loader = DataLoader(train_data, shuffle=True, generator=torch.Generator().manual_seed(args.seed), **options)
+    train_eval_loader = DataLoader(train_data, shuffle=False, **options)
+    test_loader = DataLoader(test_data, shuffle=False, **options)
+    model = FashionMNISTModel(args.hidden_size).to(device=device, dtype=torch.float32)
+    optimizer = make_optimizer(args.optimizer, model.parameters(), compile=args.compile,
+                               error_if_nonfinite=not args.skip_finite_check,
+                               foreach=args.foreach, cosine_decay=args.cosine_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs * len(train_loader)) if args.cosine_decay else None
+    # Create this callable after the scheduler installs its optimizer hook.
+    update = torch.compile(optimizer.step) if args.compile and args.optimizer == 'Adam' else optimizer.step
+    print('{} on {} | seed {} | {} train / {} test examples'.format(
+        args.optimizer, device, args.seed, len(train_data), len(test_data)), flush=True)
+    for epoch in range(1, args.epochs + 1):
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        start = time.perf_counter()
+        train_epoch(model, train_loader, optimizer, device, update=update,
+                    scheduler=scheduler, epoch=epoch, log_interval=args.log_interval)
+        if device.type == 'cuda':
+            torch.cuda.synchronize(device)
+        train_seconds = time.perf_counter() - start
+        train_loss, train_accuracy = evaluate(model, train_eval_loader, device)
+        test_loss, test_accuracy = evaluate(model, test_loader, device)
+        print('Epoch {}/{} | train loss {:.4f}, accuracy {:.2%} | test loss {:.4f}, accuracy {:.2%} | training {:.2f}s'.format(
+            epoch, args.epochs, train_loss, train_accuracy, test_loss, test_accuracy, train_seconds), flush=True)
 
-                # Calculate accuracy
-                loss = loss_function(output, target)
-                _, predicted = torch.max(output, 1)
-                total_te += target.size(0)                
-                correct_te += (predicted == target).sum().item()
-                tot_loss_te += loss.item()
-                num_iter_te += 1
-
-        print(f"Train accuracy {correct_tr/total_tr:.3f}, train loss: {tot_loss_tr/num_iter_tr:.3f}")
-        print(f"Test accuracy {correct_te/total_te:.3f}, test loss: {tot_loss_te/num_iter_te:.3f}")
 
 if __name__ == '__main__':
     main()
-
